@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mi Mapa Explorador - Morado</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; }
+        #map { height: 100vh; width: 100vw; }
+        #controles { 
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; display: flex; flex-direction: column; align-items: center; gap: 10px;
+        }
+        button { 
+            padding: 15px 30px; border-radius: 50px; border: none; 
+            background: #8000ff; color: white; font-weight: bold; font-size: 16px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3); cursor: pointer;
+        }
+        button:active { background: #5a00b3; transform: scale(0.95); }
+        #status { background: rgba(255,255,255,0.8); padding: 5px 15px; border-radius: 10px; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+    <div id="controles">
+        <div id="status">Esperando GPS...</div>
+        <button id="btn-explorar">INICIAR EXPLORACIÓN</button>
+    </div>
+
+    <script type="module">
+        // Importamos Firebase desde el CDN para que funcione en un solo archivo HTML
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // TUS CREDENCIALES INTEGRADAS
+        const firebaseConfig = {
+            apiKey: "AIzaSyBtgkP8JyRAfX7c9jVZk4XzTO9Wt3gx8pY",
+            authDomain: "mi-mapa-explorador.firebaseapp.com",
+            projectId: "mi-mapa-explorador",
+            storageBucket: "mi-mapa-explorador.firebasestorage.app",
+            messagingSenderId: "841227637478",
+            appId: "1:841227637478:web:a261f23f21c1a98aa26127"
+        };
+
+        // Inicializar Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const colRef = collection(db, "recorridos");
+
+        // Inicializar Mapa centrado en Bogotá (Teusaquillo/Pablo VI aprox)
+        const map = L.map('map').setView([4.6486, -74.0789], 16);
+        
+        // Estilo de mapa claro (CartoDB Positron) para que el morado resalte
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
+
+        // La línea morada que se irá dibujando
+        let polyline = L.polyline([], {
+            color: '#8000ff', 
+            weight: 10, 
+            opacity: 0.8, 
+            lineJoin: 'round',
+            lineCap: 'round'
+        }).addTo(map);
+
+        // 1. ESCUCHAR CAMBIOS EN FIREBASE (Para pintar lo guardado "para siempre")
+        const q = query(colRef, orderBy("timestamp", "asc"));
+        onSnapshot(q, (snapshot) => {
+            const puntos = [];
+            snapshot.forEach((doc) => {
+                const data = doc.data();
+                if(data.lat && data.lng) puntos.push([data.lat, data.lng]);
+            });
+            polyline.setLatLngs(puntos);
+            if (puntos.length > 0) map.panTo(puntos[puntos.length - 1]);
+        });
+
+        // 2. FUNCIÓN DE RASTREO
+        let grabando = false;
+        const btn = document.getElementById('btn-explorar');
+        const statusDiv = document.getElementById('status');
+
+        btn.onclick = () => {
+            if (grabando) {
+                location.reload(); // Recarga para detener (forma simple)
+                return;
+            }
+            
+            grabando = true;
+            btn.innerText = "EXPLORANDO... (RECARGAR PARA PARAR)";
+            btn.style.background = "#ff0055";
+            statusDiv.innerText = "Buscando señal satelital...";
+
+            // Activa el GPS del celular
+            navigator.geolocation.watchPosition(async (pos) => {
+                const { latitude, longitude, accuracy } = pos.coords;
+                statusDiv.innerText = `Precisión: ${Math.round(accuracy)}m | Lat: ${latitude.toFixed(4)}`;
+
+                // GUARDAR EN FIREBASE
+                try {
+                    await addDoc(colRef, {
+                        lat: latitude,
+                        lng: longitude,
+                        timestamp: serverTimestamp()
+                    });
+                } catch (e) {
+                    console.error("Error guardando:", e);
+                }
+            }, (err) => {
+                statusDiv.innerText = "Error GPS: " + err.message;
+            }, { 
+                enableHighAccuracy: true, // Usa GPS real, no solo WiFi
+                distanceFilter: 5         // Solo guarda si te mueves más de 5 metros
+            });
+        };
+    </script>
+</body>
+</html>
+</html>
