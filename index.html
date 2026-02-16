@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <title>Explorador de Calles</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#8000ff" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            overflow: hidden;
+            background: #f5f5f5;
+        }
+        
+        #map { 
+            height: 100vh; 
+            width: 100vw; 
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+        
+        #stats { 
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(128, 0, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 12px 24px;
+            border-radius: 25px;
+            color: white;
+            font-weight: 600;
+            font-size: 14px;
+            box-shadow: 0 8px 32px rgba(128, 0, 255, 0.4);
+            text-align: center;
+            min-width: 200px;
+        }
+        
+        #stats .count { 
+            font-size: 24px; 
+            font-weight: 800;
+            display: block;
+            margin-top: 4px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #00ff00;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+        
+        #precision {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            padding: 8px 16px;
+            border-radius: 15px;
+            color: white;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .install-prompt {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1001;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 16px 24px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            display: none;
+            max-width: 90%;
+            text-align: center;
+        }
+        
+        .install-prompt button {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background: #8000ff;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        /* Efecto de brillo para celdas moradas */
+        .leaflet-interactive {
+            filter: drop-shadow(0 0 3px rgba(160, 32, 255, 0.6));
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div id="stats">
+        <span class="status-indicator"></span>
+        <span id="status-text">Explorando...</span>
+        <div class="count"><span id="calles-count">0</span> calles</div>
+    </div>
+    
+    <div id="precision"></div>
+    
+    <div class="install-prompt" id="install-prompt">
+        <strong>📍 Instalar Explorador</strong>
+        <p style="margin: 8px 0; font-size: 13px;">Agrégalo a tu pantalla de inicio para mejor rendimiento</p>
+        <button id="install-btn">Instalar App</button>
+        <button onclick="this.parentElement.style.display='none'" style="background: #ccc; color: #333; margin-left: 8px;">Después</button>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, doc, setDoc, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // ============================================
+        // CONFIGURACIÓN
+        // ============================================
+        const PRECISION_GRID = 0.00015; // ~15 metros por celda
+        const MIN_ACCURACY = 30; // Metros - rechazar puntos menos precisos
+        const MOVE_THRESHOLD = 8; // Metros - movimiento mínimo para registrar
+        
+        const firebaseConfig = {
+            apiKey: "AIzaSyBtgkP8JyRAfX7c9jVZk4XzTO9Wt3gx8pY",
+            authDomain: "mi-mapa-explorador.firebaseapp.com",
+            projectId: "mi-mapa-explorador",
+            storageBucket: "mi-mapa-explorador.firebasestorage.app",
+            messagingSenderId: "841227637478",
+            appId: "1:841227637478:web:a261f23f21c1a98aa26127"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const celdasRef = collection(db, "celdas_exploradas");
+
+        // ============================================
+        // INICIALIZAR MAPA
+        // ============================================
+        const map = L.map('map', { 
+            zoomControl: false,
+            attributionControl: false
+        }).setView([4.6486, -74.0789], 16);
+
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+            maxZoom: 20
+        }).addTo(map);
+
+        // ============================================
+        // SISTEMA DE GRID
+        // ============================================
+        const celdasVisitadas = new Map(); // Cache en memoria
+        const rectangulos = new Map(); // Leaflet rectangles
+
+        function getCeldaId(lat, lng) {
+            const latGrid = Math.floor(lat / PRECISION_GRID) * PRECISION_GRID;
+            const lngGrid = Math.floor(lng / PRECISION_GRID) * PRECISION_GRID;
+            return `${latGrid.toFixed(5)}_${lngGrid.toFixed(5)}`;
+        }
+
+        function getCeldaBounds(celdaId) {
+            const [lat, lng] = celdaId.split('_').map(Number);
+            return [
+                [lat, lng],
+                [lat + PRECISION_GRID, lng + PRECISION_GRID]
+            ];
+        }
+
+        function dibujarCelda(celdaId, esNueva = false) {
+            if (rectangulos.has(celdaId)) return; // Ya dibujada
+
+            const bounds = getCeldaBounds(celdaId);
+            const rect = L.rectangle(bounds, {
+                color: '#8000ff',
+                weight: esNueva ? 3 : 2,
+                fillColor: '#a020ff',
+                fillOpacity: esNueva ? 0.75 : 0.55,
+                interactive: false,
+                className: 'celda-morada'
+            }).addTo(map);
+
+            rectangulos.set(celdaId, rect);
+
+            // Animación para celdas nuevas
+            if (esNueva) {
+                setTimeout(() => {
+                    rect.setStyle({ weight: 2, fillOpacity: 0.55 });
+                }, 2000);
+            }
+        }
+
+        // ============================================
+        // CARGAR HISTORIAL DE FIREBASE
+        // ============================================
+        async function cargarHistorial() {
+            console.log('📂 Cargando historial...');
+            const snapshot = await getDocs(celdasRef);
+            
+            snapshot.forEach((doc) => {
+                const celdaId = doc.id;
+                celdasVisitadas.set(celdaId, true);
+                dibujarCelda(celdaId, false);
+            });
+
+            actualizarContador();
+            console.log(`✅ Cargadas ${celdasVisitadas.size} celdas del historial`);
+        }
+
+        // ============================================
+        // RASTREO GPS
+        // ============================================
+        let watchId = null;
+        let wakeLock = null;
+        let ultimaPosicion = null;
+
+        async function iniciarRastreo() {
+            console.log('🚀 Iniciando rastreo automático...');
+            
+            // Wake Lock para mantener pantalla activa
+            if ('wakeLock' in navigator) {
+                try {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    console.log('🔒 Wake Lock activado');
+                } catch (err) {
+                    console.log('⚠️ Wake Lock no disponible:', err);
+                }
+            }
+
+            // Iniciar geolocalización
+            watchId = navigator.geolocation.watchPosition(
+                async (pos) => {
+                    const { latitude, longitude, accuracy } = pos.coords;
+
+                    // Actualizar UI de precisión
+                    document.getElementById('precision').innerText = 
+                        `📍 Precisión: ${Math.round(accuracy)}m | ${accuracy <= MIN_ACCURACY ? '✅' : '⚠️ Mejorando...'}`;
+
+                    // Filtro de calidad
+                    if (accuracy > MIN_ACCURACY) {
+                        console.log(`⚠️ Precisión baja: ${accuracy}m`);
+                        return;
+                    }
+
+                    // Filtro de movimiento
+                    if (ultimaPosicion) {
+                        const distancia = calcularDistancia(
+                            ultimaPosicion.lat, ultimaPosicion.lng,
+                            latitude, longitude
+                        );
+                        if (distancia < MOVE_THRESHOLD) {
+                            return; // No te has movido lo suficiente
+                        }
+                    }
+
+                    ultimaPosicion = { lat: latitude, lng: longitude };
+
+                    // Centrar mapa
+                    map.setView([latitude, longitude], map.getZoom());
+
+                    // Procesar celda
+                    const celdaId = getCeldaId(latitude, longitude);
+
+                    if (!celdasVisitadas.has(celdaId)) {
+                        // ¡CELDA NUEVA!
+                        console.log('🆕 Nueva celda descubierta:', celdaId);
+                        
+                        celdasVisitadas.set(celdaId, true);
+                        dibujarCelda(celdaId, true);
+
+                        // Guardar en Firebase
+                        try {
+                            await setDoc(doc(celdasRef, celdaId), {
+                                lat: latitude,
+                                lng: longitude,
+                                timestamp: serverTimestamp(),
+                                accuracy: accuracy
+                            });
+                        } catch (error) {
+                            console.error('❌ Error guardando celda:', error);
+                        }
+
+                        actualizarContador();
+                    }
+                },
+                (error) => {
+                    console.error('❌ Error GPS:', error);
+                    document.getElementById('status-text').innerText = 
+                        error.code === 1 ? 'Permiso GPS denegado' : 'Error GPS';
+                },
+                {
+                    enableHighAccuracy: true,
+                    maximumAge: 0,
+                    timeout: 10000
+                }
+            );
+        }
+
+        function calcularDistancia(lat1, lng1, lat2, lng2) {
+            const R = 6371000; // Radio de la Tierra en metros
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLng = (lng2 - lng1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                      Math.sin(dLng/2) * Math.sin(dLng/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        function actualizarContador() {
+            document.getElementById('calles-count').innerText = celdasVisitadas.size;
+        }
+
+        // ============================================
+        // PWA - INSTALACIÓN
+        // ============================================
+        let deferredPrompt;
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('install-prompt').style.display = 'block';
+        });
+
+        document.getElementById('install-btn').addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log(`Instalación: ${outcome}`);
+                deferredPrompt = null;
+                document.getElementById('install-prompt').style.display = 'none';
+            }
+        });
+
+        // ============================================
+        // REGISTRO DE SERVICE WORKER
+        // ============================================
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('service-worker.js')
+                .then(reg => console.log('✅ Service Worker registrado'))
+                .catch(err => console.log('❌ Error SW:', err));
+        }
+
+        // ============================================
+        // AUTO-INICIO
+        // ============================================
+        async function iniciar() {
+            await cargarHistorial();
+            await iniciarRastreo();
+            
+            // Solicitar permisos de notificación (para mantener app viva)
+            if ('Notification' in window && Notification.permission === 'default') {
+                await Notification.requestPermission();
+            }
+        }
+
+        // Iniciar automáticamente al cargar
+        window.addEventListener('load', iniciar);
+
+        // Manejar visibilidad (mantener vivo)
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                console.log('📱 App en background - manteniendo rastreo...');
+            } else {
+                console.log('👁️ App visible nuevamente');
+            }
+        });
+
+        // Prevenir que se duerma
+        setInterval(() => {
+            if (wakeLock && wakeLock.released) {
+                navigator.wakeLock.request('screen').then(lock => {
+                    wakeLock = lock;
+                    console.log('🔒 Wake Lock reactivado');
+                });
+            }
+        }, 30000); // Cada 30 segundos
+
+    </script>
+</body>
+</html>

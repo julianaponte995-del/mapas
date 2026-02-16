@@ -1,0 +1,29 @@
+{
+  "name": "Explorador de Calles",
+  "short_name": "Explorador",
+  "description": "Mapea todas las calles que has explorado en tu ciudad",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#8000ff",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect fill='%238000ff' width='512' height='512' rx='128'/%3E%3Cpath fill='white' d='M256 100c-55 0-100 45-100 100 0 75 100 200 100 200s100-125 100-200c0-55-45-100-100-100zm0 140c-22 0-40-18-40-40s18-40 40-40 40 18 40 40-18 40-40 40z'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["navigation", "travel", "utilities"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Iniciar Exploración",
+      "short_name": "Explorar",
+      "description": "Comenzar a rastrear calles nuevas",
+      "url": "./index.html",
+      "icons": []
+    }
+  ]
+}
