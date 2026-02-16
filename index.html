@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <title>Explorador Morado Pro</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f0f0; }
+        #map { height: 100vh; width: 100vw; }
+        
+        #controles { 
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; display: flex; flex-direction: column; align-items: center; gap: 12px;
+            width: 90%; max-width: 400px;
+        }
+
+        button { 
+            padding: 18px 40px; border-radius: 50px; border: none; 
+            background: #8000ff; color: white; font-weight: bold; font-size: 18px;
+            box-shadow: 0 6px 20px rgba(128, 0, 255, 0.4); cursor: pointer;
+            width: 100%; transition: all 0.3s ease;
+        }
+
+        button:active { transform: scale(0.95); box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+        
+        .btn-stop { background: #ff0055 !important; box-shadow: 0 6px 20px rgba(255, 0, 85, 0.4) !important; }
+
+        #status { 
+            background: rgba(255, 255, 255, 0.9); padding: 8px 20px; 
+            border-radius: 20px; font-size: 13px; font-weight: 500;
+            color: #333; box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center; width: auto;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+    
+    <div id="controles">
+        <div id="status">Listo para explorar</div>
+        <button id="btn-explorar">INICIAR EXPLORACIÓN</button>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        // CONFIGURACIÓN DE FIREBASE
+        const firebaseConfig = {
+            apiKey: "AIzaSyBtgkP8JyRAfX7c9jVZk4XzTO9Wt3gx8pY",
+            authDomain: "mi-mapa-explorador.firebaseapp.com",
+            projectId: "mi-mapa-explorador",
+            storageBucket: "mi-mapa-explorador.firebasestorage.app",
+            messagingSenderId: "841227637478",
+            appId: "1:841227637478:web:a261f23f21c1a98aa26127"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const colRef = collection(db, "recorridos");
+
+        // INICIALIZAR MAPA
+        const map = L.map('map', { zoomControl: false }).setView([4.6486, -74.0789], 16);
+        
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap'
+        }).addTo(map);
+
+        // Lógica de Renderizado por Sesiones
+        const polylines = {}; 
+
+        // 1. CARGAR HISTORIAL EN TIEMPO REAL
+        const q = query(colRef, orderBy("timestamp", "asc"));
+        onSnapshot(q, (snapshot) => {
+            snapshot.forEach((doc) => {
+                const data = doc.data();
+                if(data.lat && data.lng && data.sesionId) {
+                    const sId = data.sesionId;
+                    
+                    // Si la sesión no tiene su línea morada, la creamos
+                    if (!polylines[sId]) {
+                        polylines[sId] = L.polyline([], {
+                            color: '#8000ff', 
+                            weight: 10, 
+                            opacity: 0.7, 
+                            lineJoin: 'round',
+                            lineCap: 'round'
+                        }).addTo(map);
+                    }
+                    polylines[sId].addLatLng([data.lat, data.lng]);
+                }
+            });
+        });
+
+        // 2. LÓGICA DE RASTREO
+        let grabando = false;
+        let sesionActual = null;
+        let watchId = null;
+        let wakeLock = null;
+
+        const btn = document.getElementById('btn-explorar');
+        const statusDiv = document.getElementById('status');
+
+        btn.onclick = async () => {
+            if (grabando) {
+                // Detener rastreo
+                if (watchId) navigator.geolocation.clearWatch(watchId);
+                if (wakeLock) { await wakeLock.release(); wakeLock = null; }
+                location.reload(); 
+                return;
+            }
+            
+            grabando = true;
+            sesionActual = Date.now(); // ID de sesión basado en tiempo
+            btn.innerText = "DETENER Y GUARDAR";
+            btn.classList.add('btn-stop');
+            statusDiv.innerText = "Buscando satélites...";
+
+            // Intentar mantener la pantalla encendida
+            if ('wakeLock' in navigator) {
+                try { wakeLock = await navigator.wakeLock.request('screen'); } catch (err) { console.log("WakeLock no soportado"); }
+            }
+
+            watchId = navigator.geolocation.watchPosition(async (pos) => {
+                const { latitude, longitude, accuracy } = pos.coords;
+
+                // FILTRO DE CALIDAD: Si el error es mayor a 25 metros, ignoramos el punto
+                if (accuracy > 25) {
+                    statusDiv.innerText = `Señal débil (${Math.round(accuracy)}m). Buscando mejor punto...`;
+                    return;
+                }
+
+                statusDiv.innerText = `Explorando | Precisión: ${Math.round(accuracy)}m`;
+                map.panTo([latitude, longitude]);
+
+                try {
+                    await addDoc(colRef, {
+                        lat: latitude,
+                        lng: longitude,
+                        accuracy: accuracy,
+                        sesionId: sesionActual, // Crucial para separar recorridos
+                        timestamp: serverTimestamp()
+                    });
+                } catch (e) { console.error("Error Firebase:", e); }
+
+            }, (err) => {
+                statusDiv.innerText = "Error: " + err.message;
+            }, { 
+                enableHighAccuracy: true, // Forzar GPS
+                distanceFilter: 5         // Solo registrar si te mueves 5 metros
+            });
+        };
+    </script>
+</body>
+</html>
